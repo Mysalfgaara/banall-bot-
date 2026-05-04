@@ -2,17 +2,15 @@ import asyncio
 import re
 import os
 from pyrogram import Client, filters
-from pyrogram.types import Message
 from pyrogram.enums import ChatMemberStatus
-from concurrent.futures import ThreadPoolExecutor
+from asyncio import Semaphore
 import time
 
-API_ID = ""
+PI_ID = ""
 API_HASH = ""
 BOT_TOKEN = ""
 
 temp_sessions = {}
-executor = ThreadPoolExecutor(max_workers=10)
 
 app = Client("ban_bot", api_id=API_ID, api_hash=API_HASH, bot_token=BOT_TOKEN)
 
@@ -24,26 +22,17 @@ def extract_chat_id(chat_input):
         return match.group(1)
     return None
 
-async def ban_member(client, chat_id, user_id, semaphore):
+async def ban_chunk(client, chat_id, user_chunk, semaphore, chunk_num):
     async with semaphore:
-        try:
-            await client.ban_chat_member(chat_id, user_id)
-            return True
-        except Exception:
-            return False
-
-@app.on_message(filters.private & filters.command("start"))
-async def start(client, message):
-    await message.reply_text(
-        "⚡ Ultra Fast Ban Bot\n\n"
-        "1. Send me your Pyrogram session string\n"
-        "2. Then send: /startban group_link_or_id\n\n"
-        "Features:\n"
-        "- Parallel banning (10 users at once)\n"
-        "- Auto rate limit handling\n"
-        "- Skips owner and bot\n"
-        "You must have admin + ban permission"
-    )
+        banned = 0
+        for user_id in user_chunk:
+            try:
+                await client.ban_chat_member(chat_id, user_id)
+                banned += 1
+                await asyncio.sleep(0.05)
+            except Exception:
+                pass
+        return banned
 
 @app.on_message(filters.private & filters.command("startban"))
 async def startban(client, message):
@@ -65,7 +54,7 @@ async def startban(client, message):
         await message.reply_text("Invalid group link or ID")
         return
     
-    status_msg = await message.reply_text("🔍 Checking admin permissions...")
+    status_msg = await message.reply_text("🔍 Verifying admin access...")
     
     user_client = None
     try:
@@ -73,58 +62,51 @@ async def startban(client, message):
         await user_client.start()
         
         me = await user_client.get_me()
-        
-        try:
-            member = await user_client.get_chat_member(chat_id, me.id)
-        except Exception:
-            await status_msg.edit_text("Cannot access group. Make sure bot is in group or link is correct")
-            return
+        member = await user_client.get_chat_member(chat_id, me.id)
         
         if member.status not in [ChatMemberStatus.ADMINISTRATOR, ChatMemberStatus.OWNER]:
             await status_msg.edit_text("You are not an admin in this group")
             return
         
-        has_ban_right = False
-        if member.status == ChatMemberStatus.OWNER:
-            has_ban_right = True
-        elif member.privileges and member.privileges.can_restrict_members:
-            has_ban_right = True
-        
-        if not has_ban_right:
-            await status_msg.edit_text("You are admin but don't have ban permission")
+        if member.status != ChatMemberStatus.OWNER and not (member.privileges and member.privileges.can_restrict_members):
+            await status_msg.edit_text("You don't have ban permission")
             return
         
-        await status_msg.edit_text("📊 Collecting member list...")
+        await status_msg.edit_text("📥 Fetching all members...")
         
-        all_members = []
+        member_ids = []
         async for member_obj in user_client.get_chat_members(chat_id):
             if member_obj.user.id != me.id and member_obj.user.id != message.from_user.id:
-                all_members.append(member_obj.user.id)
+                member_ids.append(member_obj.user.id)
         
-        total = len(all_members)
-        await status_msg.edit_text(f"🚀 Banning {total} members with parallel processing...")
+        total = len(member_ids)
         
-        semaphore = asyncio.Semaphore(15)
-        banned_count = 0
-        start_time = time.time()
+        if total == 0:
+            await status_msg.edit_text("No members to ban")
+            return
         
+        await status_msg.edit_text(f"🚀 Banning {total} members at maximum speed...")
+        
+        chunk_size = 50
+        chunks = [member_ids[i:i + chunk_size] for i in range(0, len(member_ids), chunk_size)]
+        
+        semaphore = Semaphore(5)
         tasks = []
-        for member_id in all_members:
-            task = ban_member(user_client, chat_id, member_id, semaphore)
+        
+        for i, chunk in enumerate(chunks):
+            task = ban_chunk(user_client, chat_id, chunk, semaphore, i)
             tasks.append(task)
         
+        start_time = time.time()
         results = await asyncio.gather(*tasks)
         banned_count = sum(results)
-        
         elapsed = time.time() - start_time
-        speed = banned_count / elapsed if elapsed > 0 else 0
         
         await status_msg.edit_text(
-            f"✅ COMPLETED\n\n"
-            f"Banned: {banned_count}/{total} members\n"
+            f"✅ BANNING COMPLETE\n\n"
+            f"Banned: {banned_count}/{total}\n"
             f"Time: {elapsed:.1f} seconds\n"
-            f"Speed: {speed:.1f} users/sec\n"
-            f"Remaining: {total - banned_count} (admins/protected)"
+            f"Speed: {banned_count/elapsed:.1f} users/sec"
         )
         
     except Exception as e:
@@ -138,21 +120,11 @@ async def startban(client, message):
 @app.on_message(filters.private & filters.text & ~filters.command(["start", "startban"]))
 async def save_session(client, message):
     session_string = message.text.strip()
-    user_id = message.from_user.id
-    
-    if len(session_string) < 50:
-        await message.reply_text("Invalid session string. Generate from telegram.tools")
-        return
-    
-    temp_sessions[user_id] = session_string
-    await message.reply_text(
-        "✅ Session saved temporarily\n\n"
-        "Now send:\n"
-        "/startban group_link_or_id\n\n"
-        "⚠️ Session will be deleted after ban completes"
-    )
+    if len(session_string) > 50:
+        temp_sessions[message.from_user.id] = session_string
+        await message.reply_text("✅ Session ready. Send /startban group_link_or_id")
+    else:
+        await message.reply_text("Invalid session string")
 
 if __name__ == "__main__":
-    print("⚡ Ultra Fast Ban Bot Started")
-    print("Parallel banning enabled - 15 concurrent bans")
     app.run()

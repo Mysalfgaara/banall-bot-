@@ -7,9 +7,9 @@ from pyrogram.enums import ChatMemberStatus
 from concurrent.futures import ThreadPoolExecutor
 import time
 
-API_ID = int(os.getenv("API_ID"))
-API_HASH = os.getenv("API_HASH")
-BOT_TOKEN = os.getenv("BOT_TOKEN")
+API_ID = ""
+API_HASH = ""
+BOT_TOKEN = ""
 
 temp_sessions = {}
 executor = ThreadPoolExecutor(max_workers=10)

@@ -6,9 +6,9 @@ from pyrogram.enums import ChatMemberStatus
 from asyncio import Semaphore
 import time
 
-PI_ID = ""
-API_HASH = ""
-BOT_TOKEN = ""
+PI_ID = "39913022"
+API_HASH = "3aca64fcda769c4af7d0002119148e6b"
+BOT_TOKEN = "8496518091:AAHYALw97mLgDRU-5D3B37rd5kF2KGuV2Do"
 
 temp_sessions = {}
 
